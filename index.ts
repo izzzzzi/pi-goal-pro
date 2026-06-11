@@ -22,7 +22,6 @@
 
 import { StringEnum } from '@earendil-works/pi-ai';
 import type { ExtensionAPI, ExtensionContext } from '@earendil-works/pi-coding-agent';
-import { matchesKey } from '@earendil-works/pi-tui';
 import { Type } from 'typebox';
 
 // ─── Types ───────────────────────────────────────────────────────────────
@@ -119,7 +118,7 @@ function parseTokenBudget(input: string): { objective: string; tokenBudget: numb
 	if (!Number.isFinite(num) || num <= 0) return { objective: input.trim(), tokenBudget: null };
 	const mult = m[2]?.toLowerCase() === 'm' ? 1_000_000 : m[2]?.toLowerCase() === 'k' ? 1_000 : 1;
 	const budget = Math.round(num * mult);
-	const idx = m.index!;
+	const idx = m.index as number;
 	const objective = (input.slice(0, idx) + input.slice(idx + m[0].length)).trim();
 	return { objective, tokenBudget: budget };
 }
@@ -129,7 +128,7 @@ function parseMaxAutoTurns(input: string): { rest: string; maxAutoTurns: number 
 	if (!m) return { rest: input.trim(), maxAutoTurns: null };
 	const turns = Number.parseInt(m[1], 10);
 	if (!Number.isFinite(turns) || turns <= 0) return { rest: input.trim(), maxAutoTurns: null };
-	const idx = m.index!;
+	const idx = m.index as number;
 	const rest = (input.slice(0, idx) + input.slice(idx + m[0].length)).trim();
 	return { rest, maxAutoTurns: turns };
 }
@@ -692,65 +691,50 @@ Do not call update_goal unless the goal is actually complete.`;
 
 	// ── Message renderer for goal events ───────────────────────────────
 
+	const GOAL_KIND_LABELS: Record<string, (th: typeof theme) => string> = {
+		active: (th) => th.fg('accent', 'active'),
+		continuation: (th) => th.fg('muted', 'continuing'),
+		paused: (th) => th.fg('warning', 'paused'),
+		resumed: (th) => th.fg('accent', 'resumed'),
+		cleared: (th) => th.fg('dim', 'cleared'),
+		budget_limited: (th) => th.fg('warning', 'budget'),
+		complete: (th) => th.fg('success', 'achieved'),
+		unmet: (th) => th.fg('error', 'unmet'),
+	};
+
 	pi.registerMessageRenderer(`${GOAL_STORAGE_TYPE}:event`, (message, options, theme) => {
 		const details = message.details as GoalEvent | undefined;
 		const kind = details?.kind ?? 'continuation';
 		const state = details?.goal ?? null;
 
-		const box = new (class {
-			private children: import('@earendil-works/pi-tui').Component[] = [];
+		const renderGoalEvent = (_width: number): string[] => {
+			const lines: string[] = [];
+			const isExpanded = options.expanded;
+			const prefix = theme.fg('accent', theme.bold('Goal'));
+			const kindLabel = (GOAL_KIND_LABELS[kind] ?? ((th: typeof theme) => th.fg('text', kind)))(theme);
+			const statusText = theme.fg('dim', isExpanded ? '' : '(ctrl+o to expand)');
 
-			render(_width: number): string[] {
-				const lines: string[] = [];
-				const isExpanded = options.expanded;
-				const prefix = theme.fg('accent', theme.bold('Goal'));
-				const kindLabel = this.kindLabel(kind, theme);
-				const statusText = theme.fg('dim', isExpanded ? '' : '(ctrl+o to expand)');
+			lines.push(`${prefix} ${kindLabel} ${!isExpanded ? statusText : ''}`);
 
-				lines.push(`${prefix} ${kindLabel} ${!isExpanded ? statusText : ''}`);
-
-				if (isExpanded && state) {
-					lines.push(`${theme.fg('dim', '  Status: ')}${theme.fg('text', kind)}`);
-					lines.push(`${theme.fg('dim', '  Goal: ')}${theme.fg('text', state.objective)}`);
-					if (state.completionEvidence) {
-						lines.push(`${theme.fg('dim', '  Evidence: ')}${theme.fg('success', state.completionEvidence)}`);
-					}
-					if (state.blocker) {
-						lines.push(`${theme.fg('dim', '  Blocker: ')}${theme.fg('warning', state.blocker)}`);
-					}
-					const usage = state.tokenBudget
-						? `${formatTokens(state.tokensUsed)}/${formatTokens(state.tokenBudget)}`
-						: formatDuration(state.timeUsedMs);
-					lines.push(`${theme.fg('dim', '  Usage: ')}${theme.fg('text', usage)}`);
+			if (isExpanded && state) {
+				lines.push(`${theme.fg('dim', '  Status: ')}${theme.fg('text', kind)}`);
+				lines.push(`${theme.fg('dim', '  Goal: ')}${theme.fg('text', state.objective)}`);
+				if (state.completionEvidence) {
+					lines.push(`${theme.fg('dim', '  Evidence: ')}${theme.fg('success', state.completionEvidence)}`);
 				}
-
-				return lines;
-			}
-
-			invalidate(): void {}
-
-			handleInput?(data: string): void {
-				if (matchesKey(data, 'escape') || matchesKey(data, 'ctrl+c')) {
-					// no-op, let parent handle
+				if (state.blocker) {
+					lines.push(`${theme.fg('dim', '  Blocker: ')}${theme.fg('warning', state.blocker)}`);
 				}
+				const usage = state.tokenBudget
+					? `${formatTokens(state.tokensUsed)}/${formatTokens(state.tokenBudget)}`
+					: formatDuration(state.timeUsedMs);
+				lines.push(`${theme.fg('dim', '  Usage: ')}${theme.fg('text', usage)}`);
 			}
 
-			private kindLabel(k: string, th: typeof theme): string {
-				const labels: Record<string, string> = {
-					active: th.fg('accent', 'active'),
-					continuation: th.fg('muted', 'continuing'),
-					paused: th.fg('warning', 'paused'),
-					resumed: th.fg('accent', 'resumed'),
-					cleared: th.fg('dim', 'cleared'),
-					budget_limited: th.fg('warning', 'budget'),
-					complete: th.fg('success', 'achieved'),
-					unmet: th.fg('error', 'unmet'),
-				};
-				return labels[k] ?? k;
-			}
-		})();
+			return lines;
+		};
 
-		return box;
+		return { render: renderGoalEvent, invalidate: () => {} };
 	});
 
 	// ── Commands ───────────────────────────────────────────────────────
