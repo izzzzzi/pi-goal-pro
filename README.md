@@ -1,8 +1,9 @@
 
 <p align="center">
   <img src="https://img.shields.io/badge/pi-extension-8B5CF6?style=flat-square&logo=pi-hole&logoColor=white" alt="pi extension">
+  <img src="https://img.shields.io/npm/v/pi-goal-pro?style=flat-square&color=cb3837" alt="npm">
+  <img src="https://img.shields.io/github/actions/workflow/status/izzzzzi/pi-goal-pro/ci.yml?style=flat-square&branch=main" alt="CI">
   <img src="https://img.shields.io/badge/license-MIT-green?style=flat-square" alt="MIT">
-  <img src="https://img.shields.io/badge/status-beta-orange?style=flat-square" alt="beta">
 </p>
 
 # pi-goal-pro 🎯
@@ -176,7 +177,7 @@ Set these at the top of `index.ts` if you need to tune behavior:
 
 | Setting | Default | Description |
 |---------|---------|-------------|
-| `maxAutoTurns` | `25` | Max auto-continue turns before forced pause |
+| `maxAutoTurns` | `25` | Max auto-continue turns before auto-pause |
 | `noProgressTokenThreshold` | `50` | Output tokens below this = "no progress" |
 | `maxNoProgressTurns` | `2` | Consecutive no-progress turns before auto-pause |
 | `minContinueIntervalMs` | `3000` | Debounce interval between continuations |
