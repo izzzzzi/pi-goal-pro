@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.1.1] - 2026-06-11
+
 ### Added
 
 - Separate `test.yml` (push/PR) and `release.yml` (tag + workflow_dispatch) CI/CD pipelines
@@ -20,6 +22,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Split monolithic CI/CD into focused workflows (test quality vs. release)
 - README installation order: npm install first, manual copy second
 - Updated `.gitignore` to exclude `dist/` and `.env`
+- Cleaner package.json scripts (`npm test` = only tests, `npm run test:all` = lint + tests)
 
 ### Fixed
 
