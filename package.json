@@ -8,6 +8,7 @@
   "files": [
     "index.ts",
     "README.md",
+    "README.ru.md",
     "LICENSE"
   ],
   "keywords": [
