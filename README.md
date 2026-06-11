@@ -2,7 +2,7 @@
 <p align="center">
   <img src="https://img.shields.io/badge/pi-extension-8B5CF6?style=flat-square&logo=pi-hole&logoColor=white" alt="pi extension">
   <img src="https://img.shields.io/npm/v/pi-goal-pro?style=flat-square&color=cb3837" alt="npm">
-  <img src="https://img.shields.io/github/actions/workflow/status/izzzzzi/pi-goal-pro/ci.yml?style=flat-square&branch=main" alt="CI">
+  <img src="https://img.shields.io/github/actions/workflow/status/izzzzzi/pi-goal-pro/test.yml?style=flat-square&branch=main" alt="CI">
   <img src="https://img.shields.io/badge/license-MIT-green?style=flat-square" alt="MIT">
 </p>
 

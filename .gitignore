@@ -1,5 +1,40 @@
+# Dependencies
 node_modules/
+
+# Build output
 dist/
+*.tsbuildinfo
+coverage/
+
+# Environment & secrets
 .env
+.env.local
+.env.*.local
 *.local
+.npmrc.local
+
+# OS files
 .DS_Store
+Thumbs.db
+*.swp
+*.swo
+*~
+
+# IDE
+.idea/
+.vscode/settings.json
+.vscode/workspace.json
+*.sublime-workspace
+
+# Logs
+*.log
+npm-debug.log*
+
+# Agent tracking (local state)
+.nanny/
+
+# Research / working documents (not part of the package)
+ideal-git-workflow.md
+
+# npm pack artifacts
+*.tgz

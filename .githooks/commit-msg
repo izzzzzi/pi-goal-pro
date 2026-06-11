@@ -1,0 +1,40 @@
+#!/bin/sh
+# commit-msg: enforce conventional commit format
+# Install: git config core.hooksPath .githooks
+
+COMMIT_MSG=$(cat "$1")
+
+# Skip merge commits
+if echo "$COMMIT_MSG" | grep -qE "^Merge branch|^Merge pull request"; then
+  exit 0
+fi
+
+# Skip revert commits
+if echo "$COMMIT_MSG" | grep -qE "^Revert "; then
+  exit 0
+fi
+
+# Conventional commit pattern
+PATTERN='^(feat|fix|docs|style|refactor|perf|test|chore|ci|build|revert)(\(.+\))?!?: .+'
+
+if ! echo "$COMMIT_MSG" | grep -qE "$PATTERN"; then
+  echo ""
+  echo "✗ Commit message must follow conventional commit format:"
+  echo "  type(scope): description"
+  echo ""
+  echo "  Types: feat, fix, docs, style, refactor, perf, test, chore, ci, build"
+  echo "  Examples:"
+  echo "    feat(auth): add JWT support"
+  echo "    fix(api): handle empty request body"
+  echo "    docs(readme): update installation guide"
+  echo "    ci(actions): add npm provenance to release"
+  echo ""
+  echo "  First line MAX 72 chars. Body wraps at 72 chars."
+  echo "  BREAKING CHANGE: append ! after type/scope"
+  echo ""
+  echo "  Your commit message was:"
+  echo "  $COMMIT_MSG"
+  exit 1
+fi
+
+exit 0

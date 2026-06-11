@@ -5,7 +5,30 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [1.2.0] - 2026-06-11
+
+### Added
+- `.claude/CLAUDE.md` — agent instructions with git workflow and code style guide
+- `.pi/prompts/commit.md` — AI prompt template for conventional commit messages
+- `.pi/prompts/review.md` — AI prompt template for code review with checklist
+- `VERSION` file — single source of truth for version number
+- `.gitattributes` — consistent line endings (LF) and diff settings
+- `.githooks/pre-commit` — Biome check on staged files before each commit
+- `.githooks/commit-msg` — Enforce conventional commit format on each commit
+- `prepare` script — auto-configures git hooks path on `npm install`
+- `typecheck` script — `tsc --noEmit` for TypeScript validation
+- `check:all` script — runs both Biome check and typecheck
+- `lint-staged` config in package.json for pre-commit checks
+
+### Changed
+- **CI workflow**: renamed from `test.yml`, now with `concurrency` group and `cancel-in-progress: true`
+- **CI split into two jobs**: `quality` (lint + typecheck) and `test` (unit tests on matrix)
+- **CI matrix**: expanded to `os: [ubuntu-latest, macos-latest]` × `node: [20, 22]`
+- **release.yml**: added tag-version verification, pre-release npm tag detection, `make_latest: true`
+- `test:all` script now runs `check:all` (lint + format + typecheck) before tests
+- README CI badge fixed to point to `test.yml` instead of non-existent `ci.yml`
+- `.gitignore` expanded: added IDE files, logs, `.tgz`, coverage, `ideal-git-workflow.md`
+- Fixed TypeScript `typeof theme` scoping error in index.ts
 
 ## [1.1.1] - 2026-06-11
 

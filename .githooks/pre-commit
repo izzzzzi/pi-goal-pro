@@ -1,0 +1,28 @@
+#!/bin/sh
+# pre-commit: run Biome check on staged files
+# Install: git config core.hooksPath .githooks
+
+echo "🔍 Running pre-commit checks..."
+
+# Check for Biome
+if ! command -v npx >/dev/null 2>&1; then
+  echo "⚠️  npx not found, skipping pre-commit checks"
+  exit 0
+fi
+
+# Stash unstaged changes, check staged files only
+git stash -q --keep-index --include-untracked 2>/dev/null || true
+trap 'git stash pop -q 2>/dev/null || true' EXIT
+
+# Run Biome check on staged files
+npx @biomejs/biome check --staged --no-errors-on-unmatched 2>/dev/null
+RESULT=$?
+
+if [ $RESULT -ne 0 ]; then
+  echo ""
+  echo "❌ Pre-commit checks failed. Fix issues or use --no-verify to skip."
+  exit 1
+fi
+
+echo "✅ Pre-commit checks passed"
+exit 0

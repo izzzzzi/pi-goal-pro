@@ -691,27 +691,27 @@ Do not call update_goal unless the goal is actually complete.`;
 
 	// ── Message renderer for goal events ───────────────────────────────
 
-	const GOAL_KIND_LABELS: Record<string, (th: typeof theme) => string> = {
-		active: (th) => th.fg('accent', 'active'),
-		continuation: (th) => th.fg('muted', 'continuing'),
-		paused: (th) => th.fg('warning', 'paused'),
-		resumed: (th) => th.fg('accent', 'resumed'),
-		cleared: (th) => th.fg('dim', 'cleared'),
-		budget_limited: (th) => th.fg('warning', 'budget'),
-		complete: (th) => th.fg('success', 'achieved'),
-		unmet: (th) => th.fg('error', 'unmet'),
-	};
-
 	pi.registerMessageRenderer(`${GOAL_STORAGE_TYPE}:event`, (message, options, theme) => {
 		const details = message.details as GoalEvent | undefined;
 		const kind = details?.kind ?? 'continuation';
 		const state = details?.goal ?? null;
 
+		const goalKindLabels: Record<string, (th: typeof theme) => string> = {
+			active: (th) => th.fg('accent', 'active'),
+			continuation: (th) => th.fg('muted', 'continuing'),
+			paused: (th) => th.fg('warning', 'paused'),
+			resumed: (th) => th.fg('accent', 'resumed'),
+			cleared: (th) => th.fg('dim', 'cleared'),
+			budget_limited: (th) => th.fg('warning', 'budget'),
+			complete: (th) => th.fg('success', 'achieved'),
+			unmet: (th) => th.fg('error', 'unmet'),
+		};
+
 		const renderGoalEvent = (_width: number): string[] => {
 			const lines: string[] = [];
 			const isExpanded = options.expanded;
 			const prefix = theme.fg('accent', theme.bold('Goal'));
-			const kindLabel = (GOAL_KIND_LABELS[kind] ?? ((th: typeof theme) => th.fg('text', kind)))(theme);
+			const kindLabel = (goalKindLabels[kind] ?? ((th: typeof theme) => th.fg('text', kind)))(theme);
 			const statusText = theme.fg('dim', isExpanded ? '' : '(ctrl+o to expand)');
 
 			lines.push(`${prefix} ${kindLabel} ${!isExpanded ? statusText : ''}`);
