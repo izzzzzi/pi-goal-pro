@@ -1,6 +1,6 @@
 {
   "name": "pi-goal-pro",
-  "version": "1.0.1",
+  "version": "1.1.0",
   "description": "Persistent autonomous goals for Pi — with no-progress detection, evidence-based completion, token budgets, and auto-continuation",
   "type": "module",
   "main": "./index.ts",
