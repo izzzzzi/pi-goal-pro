@@ -22,15 +22,18 @@ Then walk away. The agent keeps going. When it's done, it reports with evidence.
 
 ## Installation
 
+### Via npm (recommended)
+
+```bash
+pi install npm:pi-goal-pro
+/reload
+```
+
+### Manual
+
 ```bash
 mkdir -p ~/.pi/agent/extensions/pi-goal-pro
-# Copy the extension file:
 cp ./index.ts ~/.pi/agent/extensions/pi-goal-pro/
-```
-
-Then reload Pi:
-
-```
 /reload
 ```
 
