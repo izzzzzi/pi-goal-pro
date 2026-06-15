@@ -5,7 +5,28 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.3.0] - 2026-06-15
+
+### Added
+- **Criteria-based evidence mapping (G2):** Goals now support `--criteria "a|b|c"` flag.
+  Agent submits evidence per criterion via `update_goal({ criterionId, evidence })`.
+  Completion is rejected until every criterion has ≥1 evidence — structural defense
+  against proxy-signal collapse.
+- **Drift detection (G3):** Tracks consecutive non-goal turns while a goal is active.
+  After `driftThreshold` (default: 4) turns, goal auto-pauses with drift warning.
+- **Abort reason differentiation (G6):** `agentAbortReason()` returns
+  `'aborted' | 'api_error' | null`. API errors no longer permanently suspend
+  goal continuation — agent retries on next timer.
+
+### Changed
+- `GoalState` now includes `criteria: CriterionState[]`, `driftCount: number`,
+  `abortReason?: 'aborted' | 'api_error'`
+- `GoalConfig` now includes `driftThreshold: number` (default: 4)
+- `reconstruct()` migrates old persisted state (missing fields get defaults)
+
 ## [1.2.1] - 2026-06-15
+
+### Fixed
 
 ### Fixed
 - `agent_end` handler no longer shows "Goal continuations suspended" notification when no

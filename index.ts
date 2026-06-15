@@ -7,11 +7,11 @@
  *   - prevalentWare/opencode-goal-plugin (no-progress detection, evidence requirements)
  *
  * Features:
- *   - /goal <objective> [--tokens N]  — set a long-running goal
- *   - /goal pause / resume / clear / status — manage goals
+ *   - /goal <objective> [--tokens N] [--max-turns N] [--criteria "a|b|c"]
+ *   - /goal pause / resume / clear / status / config / criteria
  *   - get_goal tool — agent reads current goal
- *   - update_goal tool — agent marks complete (requires evidence)
- *   - Auto-continuation with no-progress detection
+ *   - update_goal tool — agent marks complete (requires evidence per criterion)
+ *   - Auto-continuation with no-progress AND drift detection
  *   - Token budget tracking
  *   - Evidence/blocker requirements on completion
  *   - Status bar footer
@@ -27,6 +27,12 @@ import { Type } from 'typebox';
 // ─── Types ───────────────────────────────────────────────────────────────
 
 type GoalStatus = 'active' | 'paused' | 'complete' | 'unmet' | 'budget_limited';
+
+interface CriterionState {
+	id: string;
+	description: string;
+	evidence: string[]; // accumulated evidence strings
+}
 
 interface GoalState {
 	version: 1;
@@ -46,6 +52,12 @@ interface GoalState {
 	autoTurnCount: number;
 	/** Max auto-continue turns before forced pause */
 	maxAutoTurns: number;
+	/** Criteria breakdown (G2) */
+	criteria: CriterionState[];
+	/** How many consecutive turns were non-goal-driven while goal active (G3) */
+	driftCount: number;
+	/** Last agent abort reason (G6) */
+	abortReason?: 'aborted' | 'api_error';
 }
 
 interface GoalEvent {
@@ -74,6 +86,8 @@ interface GoalConfig {
 	noProgressTokenThreshold: number;
 	maxNoProgressTurns: number;
 	minContinueIntervalMs: number;
+	/** Consecutive non-goal turns before drift warning / pause (G3) */
+	driftThreshold: number;
 }
 
 // ─── Defaults ────────────────────────────────────────────────────────────
@@ -85,6 +99,7 @@ const DEFAULTS: GoalConfig = {
 	noProgressTokenThreshold: 50,
 	maxNoProgressTurns: 2,
 	minContinueIntervalMs: 3000,
+	driftThreshold: 4,
 };
 
 const GOAL_FOOTER_ID = 'pi-goal-pro';
@@ -111,6 +126,10 @@ function goalId(): string {
 	return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
 }
 
+function criterionId(): string {
+	return `c${Math.random().toString(36).slice(2, 7)}`;
+}
+
 function parseTokenBudget(input: string): { objective: string; tokenBudget: number | null } {
 	const m = input.match(/(?:^|\s)--tokens(?:=|\s+)(\d+(?:\.\d+)?)\s*([kKmM])?(?:\s|$)/);
 	if (!m) return { objective: input.trim(), tokenBudget: null };
@@ -131,6 +150,18 @@ function parseMaxAutoTurns(input: string): { rest: string; maxAutoTurns: number 
 	const idx = m.index as number;
 	const rest = (input.slice(0, idx) + input.slice(idx + m[0].length)).trim();
 	return { rest, maxAutoTurns: turns };
+}
+
+function parseCriteria(input: string): { rest: string; criteria: string[] } {
+	const m = input.match(/(?:^|\s)--criteria(?:=|\s+)"([^"]*)"(?:\s|$)/);
+	if (!m) return { rest: input.trim(), criteria: [] };
+	const list = m[1]
+		.split('|')
+		.map((s) => s.trim())
+		.filter(Boolean);
+	const idx = m.index as number;
+	const rest = (input.slice(0, idx) + input.slice(idx + m[0].length)).trim();
+	return { rest, criteria: list };
 }
 
 function footerStatus(goal: GoalState | null, _config: GoalConfig, queueDepth: number): string | undefined {
@@ -174,17 +205,19 @@ function extractOutputTokens(event: { message?: unknown }): number {
 // ─── Extension ───────────────────────────────────────────────────────────
 
 /**
- * Check if the last assistant message was aborted or errored.
+ * Return the stop reason of the last assistant message, if it was aborted/errored.
+ * Returns 'aborted' for user interrupts, 'api_error' for API failures, null otherwise.
  */
-function wasAgentAborted(event: { messages?: unknown[] }): boolean {
+function agentAbortReason(event: { messages?: unknown[] }): 'aborted' | 'api_error' | null {
 	const messages = event.messages ?? [];
 	for (let i = messages.length - 1; i >= 0; i--) {
 		const m = messages[i] as { role?: string; stopReason?: string } | undefined;
-		if (m?.role === 'assistant' && (m.stopReason === 'aborted' || m.stopReason === 'error')) {
-			return true;
+		if (m?.role === 'assistant') {
+			if (m.stopReason === 'aborted') return 'aborted';
+			if (m.stopReason === 'error') return 'api_error';
 		}
 	}
-	return false;
+	return null;
 }
 
 export default function piGoalPro(pi: ExtensionAPI) {
@@ -271,11 +304,25 @@ export default function piGoalPro(pi: ExtensionAPI) {
 
 	// ── Continuation loop ──────────────────────────────────────────────
 
+	function buildCriteriaBlock(criteria: CriterionState[]): string {
+		if (!criteria || criteria.length === 0) return '';
+		const lines = criteria.map((c) => {
+			const done = c.evidence.length > 0 ? '✅' : '⏳';
+			return `  ${done} [${c.id}] ${c.description}`;
+		});
+		return `\nCriteria:\n${lines.join('\n')}`;
+	}
+
 	function buildContinuationPrompt(goal: GoalState, isFirst: boolean): string {
 		const budgetLine =
 			goal.tokenBudget != null
 				? `- Token budget: ${formatTokens(goal.tokenBudget)} (${formatTokens(Math.max(0, goal.tokenBudget - goal.tokensUsed))} remaining)`
 				: '- No token budget set';
+		const criteriaBlock = buildCriteriaBlock(goal.criteria);
+		const criteriaInstruction =
+			goal.criteria.length > 0
+				? `\n3. For goals with criteria, submit evidence per criterion:\n   Call update_goal({ criterionId: "<id>", evidence: "<detail>" }) for each completed criterion.\n4. When ALL criteria show ✅, call update_goal({ status: "complete", evidence: "<summary>" }).\n5. The system will reject complete if any criterion has no evidence.`
+				: '';
 		return `Continue working toward the active goal.
 
 <goal_objective>
@@ -287,6 +334,7 @@ Progress so far:
 ${budgetLine}
 - Time spent: ${formatDuration(goal.timeUsedMs)}
 - Auto-continuation turns: ${goal.autoTurnCount} / ${goal.maxAutoTurns}
+${criteriaBlock}
 ${isFirst ? '- This is the first continuation turn. Review what has been done so far and decide the next concrete step.' : ''}
 
 Rules:
@@ -295,13 +343,14 @@ Rules:
    - Verify every explicit requirement has been met
    - Do not accept proxy signals or partial progress as completion
    - If any requirement is missing, incomplete, or unverified, keep working
-2. Call update_goal({ status: "complete", evidence: "<summary>" }) ONLY when the objective is fully achieved.
+2. Call update_goal({ status: "complete", evidence: "<summary>" }) ONLY when the objective is fully achieved.${criteriaInstruction}
 3. Call update_goal({ status: "unmet", blocker: "<reason>" }) if the goal cannot be achieved or is blocked.
 4. Do not mark complete merely because budget is nearly exhausted.
 5. Do not ask for permission to mark complete — just do the audit and call the tool.`;
 	}
 
 	function buildBudgetLimitPrompt(goal: GoalState): string {
+		const criteriaBlock = buildCriteriaBlock(goal.criteria);
 		return `The active goal has reached its token budget.
 
 <goal_objective>
@@ -312,6 +361,7 @@ Usage:
 - Tokens used: ${formatTokens(goal.tokensUsed)}
 - Token budget: ${goal.tokenBudget != null ? formatTokens(goal.tokenBudget) : 'none'}
 - Time spent: ${formatDuration(goal.timeUsedMs)}
+${criteriaBlock}
 
 The system has marked the goal as budget_limited. Do not start new substantive work. 
 Wrap up: summarize progress, identify remaining work, and leave the user with a clear next step.
@@ -345,6 +395,26 @@ Do not call update_goal unless the goal is actually complete.`;
 		const a = activeGoal();
 		if (!a) return;
 		if (!ctx.isIdle() || ctx.hasPendingMessages()) return;
+
+		// Drift detection (G3): non-goal turns while goal active
+		if (a.driftCount >= config.driftThreshold) {
+			updateState(a.id, { status: 'paused' as GoalStatus }, ctx);
+			const e: GoalEvent = { kind: 'paused', goal: { ...a, status: 'paused' }, timestamp: Date.now() };
+			pi.sendMessage(
+				{
+					customType: `${GOAL_STORAGE_TYPE}:event`,
+					content: `Goal paused: drifted away from objective after ${config.driftThreshold} non-goal turns. Use /goal resume to continue.`,
+					display: true,
+					details: e,
+				},
+				{ triggerTurn: false },
+			);
+			ctx.ui.notify(
+				`⏸ Goal paused (drifted after ${config.driftThreshold} non-goal turns). Use /goal resume to continue.`,
+				'warning',
+			);
+			return;
+		}
 
 		if (a.noProgressCount >= config.maxNoProgressTurns) {
 			// No-progress detection: pause the goal
@@ -404,7 +474,12 @@ Do not call update_goal unless the goal is actually complete.`;
 
 	function setGoal(
 		objective: string,
-		opts: { tokenBudget?: number | null; maxAutoTurns?: number | null; replace?: boolean },
+		opts: {
+			tokenBudget?: number | null;
+			maxAutoTurns?: number | null;
+			criteria?: string[];
+			replace?: boolean;
+		},
 		ctx: ExtensionContext,
 	): GoalState {
 		const now = Date.now();
@@ -416,6 +491,12 @@ Do not call update_goal unless the goal is actually complete.`;
 				existing.updatedAt = now;
 			}
 		}
+
+		const criteria: CriterionState[] = (opts.criteria ?? []).map((desc) => ({
+			id: criterionId(),
+			description: desc,
+			evidence: [],
+		}));
 
 		const goal: GoalState = {
 			version: 1,
@@ -430,6 +511,8 @@ Do not call update_goal unless the goal is actually complete.`;
 			noProgressCount: 0,
 			autoTurnCount: 0,
 			maxAutoTurns: opts.maxAutoTurns ?? config.maxAutoTurns,
+			criteria,
+			driftCount: 0,
 		};
 		goals.push(goal);
 
@@ -498,6 +581,7 @@ Do not call update_goal unless the goal is actually complete.`;
 		userSuspended = false;
 		consecutiveContinuations = 0;
 		target.noProgressCount = 0;
+		target.driftCount = 0;
 		updateState(target.id, { status: 'active' }, ctx);
 		const e: GoalEvent = { kind: 'resumed', goal: { ...target, status: 'active' }, timestamp: Date.now() };
 		pi.sendMessage(
@@ -530,8 +614,13 @@ Do not call update_goal unless the goal is actually complete.`;
 			if (entry.type !== 'custom' || entry.customType !== GOAL_STORAGE_TYPE) continue;
 			const data = entry.data as GoalSnapshot | undefined;
 			if (!data) continue;
-			goals = data.goals.map((g) => ({ ...g }));
-			if (data.config) config = { ...data.config };
+			goals = data.goals.map((g) => ({
+				...g,
+				// Ensure new fields exist on old persisted state
+				criteria: 'criteria' in g ? g.criteria : [],
+				driftCount: 'driftCount' in g ? g.driftCount : 0,
+			}));
+			if (data.config) config = { ...DEFAULTS, ...data.config };
 		}
 	}
 
@@ -617,6 +706,13 @@ Do not call update_goal unless the goal is actually complete.`;
 			charged.autoTurnCount += 1;
 		}
 
+		// Drift tracking (G3): non-goal turns while goal active
+		if (!goalDrivenInvocation && charged.status === 'active') {
+			charged.driftCount += 1;
+		} else if (goalDrivenInvocation) {
+			charged.driftCount = 0;
+		}
+
 		// Budget check
 		if (charged.status === 'active' && charged.tokenBudget !== null && charged.tokensUsed >= charged.tokenBudget) {
 			charged.status = 'budget_limited';
@@ -646,11 +742,21 @@ Do not call update_goal unless the goal is actually complete.`;
 		const wasGoalDriven = goalDrivenInvocation;
 		goalDrivenInvocation = false;
 
-		if (wasAgentAborted(event)) {
-			if (activeGoal()) {
+		const abortReason = agentAbortReason(event);
+		if (abortReason) {
+			const a = activeGoal();
+			if (!a) return;
+
+			if (abortReason === 'aborted') {
+				// User interrupt — suspend
 				userSuspended = true;
 				clearTimer();
 				ctx.ui.notify('⏸ Goal continuations suspended (interrupted). Use /goal resume to continue.', 'info');
+			} else {
+				// API error — don't suspend, just record. Timer will retry.
+				a.abortReason = 'api_error';
+				updateState(a.id, { abortReason: 'api_error' }, ctx);
+				ctx.ui.notify('⚠️ API error — goal continuation will retry shortly.', 'warning');
 			}
 			return;
 		}
@@ -673,10 +779,20 @@ Do not call update_goal unless the goal is actually complete.`;
 			const remaining = Math.max(0, a.tokenBudget - a.tokensUsed);
 			lines.push(`Token budget: ${formatTokens(a.tokenBudget)} (${formatTokens(remaining)} remaining)`);
 		}
+		if (a.criteria.length > 0) {
+			const critLines = a.criteria.map((c) => {
+				const done = c.evidence.length > 0 ? '✅' : '⏳';
+				return `    ${done} ${c.description}`;
+			});
+			lines.push('Criteria:', ...critLines);
+		}
 		const qd = queueDepth();
 		if (qd > 0) lines.push(`${qd} paused goal(s) remaining.`);
 		lines.push('');
 		lines.push('Use update_goal({ status: "complete", evidence: "..." }) when the objective is fully achieved.');
+		if (a.criteria.length > 0) {
+			lines.push('To add evidence per criterion: update_goal({ criterionId: "<id>", evidence: "..." })');
+		}
 		lines.push('Use update_goal({ status: "unmet", blocker: "..." }) if the goal cannot be achieved.');
 
 		return {
@@ -721,6 +837,12 @@ Do not call update_goal unless the goal is actually complete.`;
 			if (isExpanded && state) {
 				lines.push(`${theme.fg('dim', '  Status: ')}${theme.fg('text', kind)}`);
 				lines.push(`${theme.fg('dim', '  Goal: ')}${theme.fg('text', state.objective)}`);
+				if (state.criteria && state.criteria.length > 0) {
+					for (const c of state.criteria) {
+						const icon = c.evidence.length > 0 ? '✅' : '⏳';
+						lines.push(`${theme.fg('dim', `  ${icon} `)}${theme.fg('text', c.description)}`);
+					}
+				}
 				if (state.completionEvidence) {
 					lines.push(`${theme.fg('dim', '  Evidence: ')}${theme.fg('success', state.completionEvidence)}`);
 				}
@@ -753,7 +875,7 @@ Do not call update_goal unless the goal is actually complete.`;
 			if (!trimmed || trimmed === 'status') {
 				if (goals.length === 0) {
 					ctx.ui.notify(
-						'Usage: /goal <objective> [--tokens N] [--max-turns N]\n  /goal pause|resume|clear|status|config',
+						'Usage: /goal <objective> [--tokens N] [--max-turns N] [--criteria "a|b|c"]\n  /goal pause|resume|clear|status|config',
 						'info',
 					);
 					return;
@@ -766,6 +888,14 @@ Do not call update_goal unless the goal is actually complete.`;
 					msg += `\nActive: ${a.objective.replace(/\s+/g, ' ').slice(0, 80)}`;
 					msg += `\n  Status: ${a.status} | Tokens: ${formatTokens(a.tokensUsed)}${a.tokenBudget ? `/${formatTokens(a.tokenBudget)}` : ''} | Time: ${formatDuration(a.timeUsedMs)}`;
 					msg += `\n  Turns: ${a.autoTurnCount}/${a.maxAutoTurns}`;
+					if (a.criteria.length > 0) {
+						msg += '\n  Criteria:';
+						for (const c of a.criteria) {
+							const icon = c.evidence.length > 0 ? '✅' : '⏳';
+							msg += `\n    ${icon} ${c.description} (${c.evidence.length} evidence)`;
+						}
+					}
+					if (a.driftCount > 0) msg += `\n  Drift: ${a.driftCount}`;
 				}
 				if (paused.length > 0) {
 					msg += `\nPaused: ${paused.length}`;
@@ -780,7 +910,7 @@ Do not call update_goal unless the goal is actually complete.`;
 
 			if (trimmed === 'help') {
 				ctx.ui.notify(
-					`/goal <objective> [--tokens N] [--max-turns N] — set a goal
+					`/goal <objective> [--tokens N] [--max-turns N] [--criteria "a|b|c"] — set a goal
 /goal status — show current goal
 /goal pause — pause active goal
 /goal resume — resume paused goal
@@ -830,25 +960,30 @@ Do not call update_goal unless the goal is actually complete.`;
   maxAutoTurns: ${config.maxAutoTurns}
   noProgressTokenThreshold: ${config.noProgressTokenThreshold}
   maxNoProgressTurns: ${config.maxNoProgressTurns}
-  minContinueIntervalMs: ${config.minContinueIntervalMs}`,
+  minContinueIntervalMs: ${config.minContinueIntervalMs}
+  driftThreshold: ${config.driftThreshold}`,
 					'info',
 				);
 				return;
 			}
 
-			// /goal <objective> [--tokens N] [--max-turns N]
+			// /goal <objective> [--tokens N] [--max-turns N] [--criteria "a|b|c"]
 			let rest = trimmed;
 
 			// Parse --max-turns
 			const turnsResult = parseMaxAutoTurns(rest);
 			rest = turnsResult.rest;
 
-			// Parse --tokens
+			// Parse --criteria
+			const criteriaResult = parseCriteria(rest);
+			rest = criteriaResult.rest;
+
+			// Parse --tokens (must be after criteria to get clean objective)
 			const budgetResult = parseTokenBudget(rest);
 			const objective = budgetResult.objective;
 
 			if (!objective) {
-				ctx.ui.notify('Usage: /goal <objective> [--tokens N] [--max-turns N]', 'warning');
+				ctx.ui.notify('Usage: /goal <objective> [--tokens N] [--max-turns N] [--criteria "a|b|c"]', 'warning');
 				return;
 			}
 
@@ -866,12 +1001,14 @@ Do not call update_goal unless the goal is actually complete.`;
 				{
 					tokenBudget: budgetResult.tokenBudget,
 					maxAutoTurns: turnsResult.maxAutoTurns,
+					criteria: criteriaResult.criteria,
 					replace: !!existing,
 				},
 				ctx,
 			);
 
-			ctx.ui.notify(`🎯 Goal set: ${goal.objective.replace(/\s+/g, ' ').slice(0, 80)}…`, 'info');
+			const criteriaNote = goal.criteria.length > 0 ? ` (${goal.criteria.length} criteria)` : '';
+			ctx.ui.notify(`🎯 Goal set: ${goal.objective.replace(/\s+/g, ' ').slice(0, 80)}…${criteriaNote}`, 'info');
 		},
 	});
 
@@ -880,7 +1017,7 @@ Do not call update_goal unless the goal is actually complete.`;
 	pi.registerTool({
 		name: 'get_goal',
 		label: 'Get Goal',
-		description: 'Get the current active goal, its status, token usage, budget, and queue.',
+		description: 'Get the current active goal, its status, token usage, budget, criteria progress, and queue.',
 		promptSnippet: 'Read the current pi-goal-pro objective and remaining budget',
 		promptGuidelines: ['Use get_goal when you need the current objective or remaining budget.'],
 		parameters: Type.Object({}),
@@ -901,6 +1038,12 @@ Do not call update_goal unless the goal is actually complete.`;
 							time_used_seconds: Math.floor(a.timeUsedMs / 1000),
 							auto_turns: a.autoTurnCount,
 							max_auto_turns: a.maxAutoTurns,
+							criteria: a.criteria.map((c) => ({
+								id: c.id,
+								description: c.description,
+								done: c.evidence.length > 0,
+								evidence_count: c.evidence.length,
+							})),
 						}
 					: null,
 				paused: pausedGoals().map((g) => ({
@@ -927,23 +1070,57 @@ Do not call update_goal unless the goal is actually complete.`;
 	pi.registerTool({
 		name: 'update_goal',
 		label: 'Update Goal',
-		description: `Close the active goal. Use status "complete" with evidence when the objective is fully achieved and verified against real artifacts (files, tests, command output). Use status "unmet" with blocker when the goal cannot be achieved or is blocked. Do not close a goal merely because work is stopping or budget is exhausted.`,
-		promptSnippet: 'Mark the active goal complete or unmet after a strict completion audit',
+		description: `Close or update the active goal. Use status "complete" with evidence when the objective is fully achieved and verified against real artifacts (files, tests, command output). Use status "unmet" with blocker when the goal cannot be achieved or is blocked. For goals with criteria, submit evidence per criterion using criterionId + evidence first. Do not close a goal merely because work is stopping or budget is exhausted.`,
+		promptSnippet:
+			'Mark the active goal complete or unmet after a strict completion audit, or add evidence per criterion',
 		promptGuidelines: [
 			'Use update_goal only after a strict completion audit against real evidence.',
+			'For goals with criteria, first submit evidence per criterion: update_goal({ criterionId: "<id>", evidence: "..." })',
+			'When ALL criteria have evidence, call update_goal({ status: "complete", evidence: "<summary>" })',
 			'Provide concrete evidence for complete, or a concrete blocker for unmet.',
 		],
 		parameters: Type.Object({
-			status: StringEnum(['complete', 'unmet'] as const),
+			status: Type.Optional(StringEnum(['complete', 'unmet'] as const)),
 			evidence: Type.Optional(
 				Type.String({ description: 'Required for complete. Summarize concrete evidence verified.' }),
 			),
 			blocker: Type.Optional(Type.String({ description: 'Required for unmet. Explain the concrete blocker.' })),
+			criterionId: Type.Optional(
+				Type.String({ description: 'ID of the criterion this evidence applies to (from get_goal).' }),
+			),
 		}),
 		async execute(_id, params, _signal, _onUpdate, ctx) {
 			const a = activeGoal();
 			if (!a) {
 				return { content: [{ type: 'text', text: 'No active goal to update.' }], details: {}, isError: true };
+			}
+
+			// Per-criterion evidence submission (G2)
+			if (params.criterionId && params.evidence) {
+				const criterion = a.criteria.find((c) => c.id === params.criterionId);
+				if (!criterion) {
+					return {
+						content: [
+							{
+								type: 'text',
+								text: `Criterion "${params.criterionId}" not found. Available criteria: ${a.criteria.map((c) => `${c.id} (${c.description})`).join(', ') || 'none (goal has no criteria)'}`,
+							},
+						],
+						details: {},
+						isError: true,
+					};
+				}
+				criterion.evidence.push(params.evidence);
+				updateState(a.id, { criteria: [...a.criteria] }, ctx);
+				return {
+					content: [
+						{
+							type: 'text',
+							text: `Evidence recorded for criterion "${criterion.description}": ${params.evidence}`,
+						},
+					],
+					details: { criterion: criterion.id, evidence: params.evidence },
+				};
 			}
 
 			if (params.status === 'complete') {
@@ -959,7 +1136,27 @@ Do not call update_goal unless the goal is actually complete.`;
 						isError: true,
 					};
 				}
-				updateState(a.id, { status: 'complete', completionEvidence: params.evidence, noProgressCount: 0 }, ctx);
+
+				// Check criteria coverage (G2)
+				const uncovered = a.criteria.filter((c) => c.evidence.length === 0);
+				if (uncovered.length > 0) {
+					return {
+						content: [
+							{
+								type: 'text',
+								text: `Cannot mark complete: ${uncovered.length} criterion/criteria still lack evidence:\n${uncovered.map((c) => `  ⏳ ${c.id}: ${c.description}`).join('\n')}\n\nSubmit evidence per criterion first: update_goal({ criterionId: "<id>", evidence: "..." })`,
+							},
+						],
+						details: {},
+						isError: true,
+					};
+				}
+
+				updateState(
+					a.id,
+					{ status: 'complete', completionEvidence: params.evidence, noProgressCount: 0, driftCount: 0 },
+					ctx,
+				);
 				const e: GoalEvent = { kind: 'complete', goal: { ...a, status: 'complete' }, timestamp: Date.now() };
 				pi.sendMessage(
 					{
@@ -991,7 +1188,7 @@ Do not call update_goal unless the goal is actually complete.`;
 						isError: true,
 					};
 				}
-				updateState(a.id, { status: 'unmet', blocker: params.blocker, noProgressCount: 0 }, ctx);
+				updateState(a.id, { status: 'unmet', blocker: params.blocker, noProgressCount: 0, driftCount: 0 }, ctx);
 				const e: GoalEvent = { kind: 'unmet', goal: { ...a, status: 'unmet' }, timestamp: Date.now() };
 				pi.sendMessage(
 					{
@@ -1014,7 +1211,12 @@ Do not call update_goal unless the goal is actually complete.`;
 			}
 
 			return {
-				content: [{ type: 'text', text: "Invalid status. Use 'complete' or 'unmet'." }],
+				content: [
+					{
+						type: 'text',
+						text: "Invalid parameters. Use status:'complete'|'unmet' with evidence/blocker, or criterionId + evidence.",
+					},
+				],
 				details: {},
 				isError: true,
 			};
