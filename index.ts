@@ -647,9 +647,11 @@ Do not call update_goal unless the goal is actually complete.`;
 		goalDrivenInvocation = false;
 
 		if (wasAgentAborted(event)) {
-			userSuspended = true;
-			clearTimer();
-			ctx.ui.notify('⏸ Goal continuations suspended (interrupted). Use /goal resume to continue.', 'info');
+			if (activeGoal()) {
+				userSuspended = true;
+				clearTimer();
+				ctx.ui.notify('⏸ Goal continuations suspended (interrupted). Use /goal resume to continue.', 'info');
+			}
 			return;
 		}
 
