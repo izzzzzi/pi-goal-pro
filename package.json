@@ -7,6 +7,7 @@
   "types": "./index.ts",
   "files": [
     "index.ts",
+    "helpers.ts",
     "README.md",
     "README.ru.md",
     "CHANGELOG.md",
@@ -65,9 +66,5 @@
     "format": "biome format --write .",
     "prepare": "git config core.hooksPath .githooks",
     "dev": "pi -e ./index.ts"
-  },
-  "lint-staged": {
-    "*.{ts,tsx}": ["npx @biomejs/biome check --write", "npx tsc --noEmit --pretty"],
-    "*.{json,md,yaml}": ["npx @biomejs/biome format --write"]
   }
 }

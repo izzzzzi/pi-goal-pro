@@ -5,6 +5,24 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.3.1] - 2026-06-16
+
+### Changed
+- Extracted pure utility functions and types into `helpers.ts` — tests import from shared module instead of duplicating ~120 lines
+- Combined test.yml + release.yml into a single `ci.yml` workflow
+
+### Removed
+- Dead `_turnOutputTokens` variable (assigned, never read)
+- Speculative `GoalState.version` field (never checked)
+- Unused `_config` parameter from `footerStatus`
+- Stale `lint-staged` config in package.json (dependency not installed)
+- `ideal-git-workflow.md` (500+ line aspirational reference doc)
+- `.gitattributes` (defaults suffice for single-file repo)
+- Pre-release npm tag detection in release workflow (never used)
+
+### Fixed
+- Test `GoalConfig` type now includes `driftThreshold` field (was stale)
+
 ## [1.3.0] - 2026-06-15
 
 ### Added

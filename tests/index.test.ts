@@ -1,117 +1,17 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-
-// ─── Copy of pure utility functions from index.ts for testing ─────────────
-
-function formatTokens(v: number): string {
-	if (v >= 1_000_000) return `${(v / 1_000_000).toFixed(v >= 10_000_000 ? 0 : 1).replace(/\.0$/, '')}M`;
-	if (v >= 1_000) return `${(v / 1_000).toFixed(v >= 10_000 ? 0 : 1).replace(/\.0$/, '')}K`;
-	return String(v);
-}
-
-function formatDuration(ms: number): string {
-	const total = Math.max(0, Math.floor(ms / 1000));
-	const h = Math.floor(total / 3600);
-	const m = Math.floor((total % 3600) / 60);
-	const s = total % 60;
-	if (h > 0) return `${h}h${String(m).padStart(2, '0')}m${String(s).padStart(2, '0')}s`;
-	if (m > 0) return `${m}m${String(s).padStart(2, '0')}s`;
-	return `${s}s`;
-}
-
-function goalId(): string {
-	return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
-}
-
-function parseTokenBudget(input: string): { objective: string; tokenBudget: number | null } {
-	const m = input.match(/(?:^|\s)--tokens(?:=|\s+)(\d+(?:\.\d+)?)\s*([kKmM])?(?:\s|$)/);
-	if (!m) return { objective: input.trim(), tokenBudget: null };
-	const num = Number(m[1]);
-	if (!Number.isFinite(num) || num <= 0) return { objective: input.trim(), tokenBudget: null };
-	const mult = m[2]?.toLowerCase() === 'm' ? 1_000_000 : m[2]?.toLowerCase() === 'k' ? 1_000 : 1;
-	const budget = Math.round(num * mult);
-	const objective = (input.slice(0, m.index!) + input.slice(m.index! + m[0].length)).trim();
-	return { objective, tokenBudget: budget };
-}
-
-function parseMaxAutoTurns(input: string): { rest: string; maxAutoTurns: number | null } {
-	const m = input.match(/(?:^|\s)--max-turns(?:=|\s+)(\d+)(?:\s|$)/);
-	if (!m) return { rest: input.trim(), maxAutoTurns: null };
-	const turns = Number.parseInt(m[1], 10);
-	if (!Number.isFinite(turns) || turns <= 0) return { rest: input.trim(), maxAutoTurns: null };
-	const rest = (input.slice(0, m.index!) + input.slice(m.index! + m[0].length)).trim();
-	return { rest, maxAutoTurns: turns };
-}
-
-function extractOutputTokens(event: { message?: { usage?: unknown } }): number {
-	const usage = event.message?.usage as Record<string, unknown> | undefined;
-	if (!usage) return 0;
-	if (typeof usage.output === 'number')
-		return usage.output + (typeof usage.reasoning === 'number' ? usage.reasoning : 0);
-	if (typeof usage.totalTokens === 'number') {
-		const total = usage.totalTokens as number;
-		const cacheRead = typeof usage.cacheRead === 'number' ? (usage.cacheRead as number) : 0;
-		const inputTokens = typeof usage.input === 'number' ? (usage.input as number) : 0;
-		const delta = total - cacheRead - inputTokens;
-		return delta > 0 ? delta : 0;
-	}
-	return 0;
-}
-
-type GoalStatus = 'active' | 'paused' | 'complete' | 'unmet' | 'budget_limited';
-
-interface GoalState {
-	version: 1;
-	id: string;
-	objective: string;
-	status: GoalStatus;
-	tokenBudget: number | null;
-	tokensUsed: number;
-	timeUsedMs: number;
-	createdAt: number;
-	updatedAt: number;
-	completionEvidence?: string;
-	blocker?: string;
-	noProgressCount: number;
-	autoTurnCount: number;
-	maxAutoTurns: number;
-}
-
-interface GoalConfig {
-	maxAutoTurns: number;
-	noProgressTokenThreshold: number;
-	maxNoProgressTurns: number;
-	minContinueIntervalMs: number;
-}
-
-function footerStatus(goal: GoalState | null, _config: GoalConfig, queueDepth: number): string | undefined {
-	if (!goal) return undefined;
-	const qs = queueDepth > 0 ? ` [+${queueDepth}]` : '';
-	const usage = goal.tokenBudget
-		? `${formatTokens(goal.tokensUsed)}/${formatTokens(goal.tokenBudget)}`
-		: formatDuration(goal.timeUsedMs);
-	switch (goal.status) {
-		case 'active':
-			return `🎯 goal active (${usage})${qs}`;
-		case 'paused':
-			return `⏸  goal paused${qs}`;
-		case 'complete':
-			return `✅ goal achieved${qs}`;
-		case 'unmet':
-			return `🚫 goal unmet${qs}`;
-		case 'budget_limited':
-			return `💰 goal budget (${usage})${qs}`;
-	}
-}
+import {
+	extractOutputTokens,
+	footerStatus,
+	formatDuration,
+	formatTokens,
+	type GoalState,
+	goalId,
+	parseMaxAutoTurns,
+	parseTokenBudget,
+} from '../helpers';
 
 // ─── Tests ───────────────────────────────────────────────────────────────
-
-const defaultConfig: GoalConfig = {
-	maxAutoTurns: 25,
-	noProgressTokenThreshold: 50,
-	maxNoProgressTurns: 2,
-	minContinueIntervalMs: 3000,
-};
 
 describe('parseTokenBudget', () => {
 	it('parses objective without budget', () => {
@@ -300,7 +200,6 @@ describe('extractOutputTokens', () => {
 
 describe('footerStatus', () => {
 	const makeGoal = (overrides: Partial<GoalState> = {}): GoalState => ({
-		version: 1 as const,
 		id: 'test-1',
 		objective: 'Refactor auth',
 		status: 'active',
@@ -312,16 +211,18 @@ describe('footerStatus', () => {
 		noProgressCount: 0,
 		autoTurnCount: 0,
 		maxAutoTurns: 25,
+		criteria: [],
+		driftCount: 0,
 		...overrides,
 	});
 
 	it('returns undefined for null goal', () => {
-		assert.equal(footerStatus(null, defaultConfig, 0), undefined);
+		assert.equal(footerStatus(null, 0), undefined);
 	});
 
 	it('shows active with time', () => {
 		const g = makeGoal({ status: 'active', timeUsedMs: 5_000 });
-		assert.match(footerStatus(g, defaultConfig, 0) as string, /🎯 goal active \(5s\)/);
+		assert.match(footerStatus(g, 0) as string, /🎯 goal active \(5s\)/);
 	});
 
 	it('shows active with token budget', () => {
@@ -330,27 +231,27 @@ describe('footerStatus', () => {
 			tokenBudget: 50_000,
 			tokensUsed: 1_200,
 		});
-		assert.match(footerStatus(g, defaultConfig, 0) as string, /🎯 goal active \(1\.2K\/50K\)/);
+		assert.match(footerStatus(g, 0) as string, /🎯 goal active \(1\.2K\/50K\)/);
 	});
 
 	it('shows active with queue depth', () => {
 		const g = makeGoal({ status: 'active', timeUsedMs: 10_000 });
-		assert(footerStatus(g, defaultConfig, 2)?.includes('[+2]'));
+		assert(footerStatus(g, 2)?.includes('[+2]'));
 	});
 
 	it('shows paused', () => {
 		const g = makeGoal({ status: 'paused' });
-		assert.match(footerStatus(g, defaultConfig, 0) as string, /⏸/);
+		assert.match(footerStatus(g, 0) as string, /⏸/);
 	});
 
 	it('shows complete', () => {
 		const g = makeGoal({ status: 'complete' });
-		assert.match(footerStatus(g, defaultConfig, 0) as string, /✅/);
+		assert.match(footerStatus(g, 0) as string, /✅/);
 	});
 
 	it('shows unmet', () => {
 		const g = makeGoal({ status: 'unmet' });
-		assert.match(footerStatus(g, defaultConfig, 0) as string, /🚫/);
+		assert.match(footerStatus(g, 0) as string, /🚫/);
 	});
 
 	it('shows budget_limited', () => {
@@ -359,6 +260,6 @@ describe('footerStatus', () => {
 			tokenBudget: 100_000,
 			tokensUsed: 100_000,
 		});
-		assert.match(footerStatus(g, defaultConfig, 0) as string, /💰/);
+		assert.match(footerStatus(g, 0) as string, /💰/);
 	});
 });
